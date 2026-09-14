@@ -1,5 +1,9 @@
 # App Settings Utility
 
+<p align="center">
+	<img width="1024" alt="AppSettingsUtiliy" src="https://github.com/cantscript/JNUC2026/blob/main/Images/T%26THeader-PLACEHOLDER.png">
+</p>
+
 App Settings Utility is an interactive macOS shell script for finding the app and binary identifiers used when building Apple's [`com.apple.configuration.app.settings` declaration](https://developer.apple.com/documentation/devicemanagement/appsettings).
 
 It removes the need to remember App Store API endpoints or the exact `codesign` commands needed to inspect a Mac application. Results can be reviewed in Terminal, collected during a session, and exported to CSV for later use or sharing with another administrator.
