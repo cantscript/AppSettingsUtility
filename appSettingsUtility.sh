@@ -2,8 +2,18 @@
 
 ###############################################################################
 # App Settings Utility
-# Interactive app identifier and signing information lookup utility
+# Version: 1.0.1
+#
+# Interactive app identifier and signing information lookup utility.
+#
+# Contributor: Anthony Darlow (CantScript)
+# License: MIT
+#
+# This software is provided "as is", without warranty of any kind.
+# Use of this utility and its output is entirely at your own risk.
 ###############################################################################
+
+SCRIPT_VERSION="1.0.1"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -101,6 +111,7 @@ EOF
     printf '%b\n%b%b%s%b\n' "$RESET" "$YELLOW" "$BOLD" \
         '========================== com.apple.configuration.app.settings ===========================' "$RESET"
     printf '%*s%s\n' 16 '' 'A utility to find the details you need for this declaration'
+    printf '%*sVersion %s\n' 39 '' "$SCRIPT_VERSION"
     printf '\n'
 }
 
@@ -1482,10 +1493,14 @@ signature_field() {
 }
 
 inspect_local_app() {
-    local app="$1" name executable raw arch arches slice hash team signing state verified version bundle rows='[]'
+    local app="$1" name executable raw arch arches slice hash team signing state verified version bundle designated_requirement rows='[]'
     name="${app##*/}"; name="${name%.app}"
-    raw=$(/usr/bin/codesign -dvvv "$app" 2>&1)
+    # -r- asks codesign to display the app's internal designated requirement
+    # alongside the signature fields already collected by this command.
+    raw=$(/usr/bin/codesign -dvvv -r- "$app" 2>&1)
     executable=$(signature_field "$raw" Executable)
+    designated_requirement=$(printf '%s\n' "$raw" | /usr/bin/sed -n \
+        's/^designated => //p' | /usr/bin/head -n 1)
     if [[ -z "$executable" ]]; then
         local executable_name
         executable_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist" 2>/dev/null)
@@ -1530,10 +1545,12 @@ inspect_local_app() {
             --arg name "$name" --arg path "$app" --arg executable "$executable" \
             --arg bundle "$bundle" --arg version "$version" --arg arch "$arch" \
             --arg hash "$hash" --arg team "$team" --arg signing "$signing" \
+            --arg designated_requirement "$designated_requirement" \
             --arg state "$state" --arg verified "$verified" \
             '. + [{name:$name,path:$path,executable:$executable,bundleId:$bundle,version:$version,
                 architecture:$arch,CDHash:$hash,TeamID:$team,SigningID:$signing,
-                PathPrefix:($path + "/"),SigningState:$state,verification:$verified}]')
+                DesignatedRequirement:$designated_requirement,PathPrefix:($path + "/"),
+                SigningState:$state,verification:$verified}]')
     done
     LOCAL_INSPECTION="$rows"
 }
@@ -1554,7 +1571,8 @@ show_local_details() {
         def value: if . == "" then "Unavailable" else . end;
         .[0] | "App path: \(.path)\nExecutable: \(.executable | value)
 Bundle ID: \(.bundleId | value)\nVersion: \(.version | value)
-Signature verification: \(.verification)\nPathPrefix (suggested): \(.PathPrefix)"
+Signature verification: \(.verification)\nPathPrefix (suggested): \(.PathPrefix)
+Designated Requirement: \(.DesignatedRequirement | value)"
     ' | format_app_attributes
     printf '\n'
     printf '%s' "$visible_inspection" | jq -r '
@@ -1655,8 +1673,8 @@ export_local_csv() {
     fi
     output_file=$(mktemp "${OUTPUT_DIRECTORY}/Local-Mac-Apps_$(date +%Y-%m-%d_%H-%M-%S)_XXXXXX") || return
     if jq -sr '
-        ["App Name","App Path","Executable Path","Bundle ID","Version","Architecture","CDHash","TeamID","SigningID","PathPrefix (suggested)","SigningState","Signature Verification"],
-        (.[] | [.name,.path,.executable,.bundleId,.version,.architecture,.CDHash,.TeamID,.SigningID,.PathPrefix,.SigningState,.verification]) | @csv
+        ["App Name","App Path","Executable Path","Bundle ID","Version","Architecture","CDHash","TeamID","SigningID","Designated Requirement","PathPrefix (suggested)","SigningState","Signature Verification"],
+        (.[] | [.name,.path,.executable,.bundleId,.version,.architecture,.CDHash,.TeamID,.SigningID,.DesignatedRequirement,.PathPrefix,.SigningState,.verification]) | @csv
         ' "$LOCAL_SELECTED_FILE" > "$output_file" && mv "$output_file" "$output_file.csv"; then
         : > "$LOCAL_SELECTED_FILE"
         clear_screen
@@ -2850,12 +2868,13 @@ confirm_exit() {
 
 # Help is embedded so it remains available without a separate manual or network.
 print_usage() {
+    printf 'App Settings Lookup %s\n' "$SCRIPT_VERSION"
     cat <<'HELP'
-App Settings Lookup
 A utility to find app identifiers and signing details for App Settings.
 
 Usage:
   /bin/bash appSettingsUtility.sh           Open the interactive menus
+  /bin/bash appSettingsUtility.sh --version Show the installed version
   /bin/bash appSettingsUtility.sh --help    Show this quick guide
   /bin/bash appSettingsUtility.sh --manual  Print the complete manual
 
@@ -2963,6 +2982,9 @@ team identifier uses the literal token *APPLE*. A com.apple.* name alone
 is not proof of Apple signing. Existing team identifiers are preserved.
 SigningID: the Identifier in the code signature; it is not assumed to be
 the same as the app bundle's identifier.
+Designated Requirement: Apple's expression for recognising this signed
+app, reported by codesign. It is shown once because it identifies the app,
+rather than an individual ARM or Intel slice.
 PathPrefix (suggested): the app folder with a trailing slash. This is an
 optional path restriction you could choose, not data from the signature.
 
@@ -2993,8 +3015,9 @@ App Store CSV includes name, platforms, bundle ID, App Store ID, developer,
 version, minimum OS, App Store URL, and External Version ID.
 
 Local CSV includes name, app and executable paths, bundle ID, version,
-architecture, CDHash, TeamID, SigningID, suggested PathPrefix, SigningState,
-and signature verification. A universal app can produce multiple rows.
+architecture, CDHash, TeamID, SigningID, designated requirement, suggested
+PathPrefix, SigningState, and signature verification. A universal app can
+produce multiple rows; its designated requirement is repeated in each row.
 Unknown SigningState is retained as Unknown; unavailable IDs are blank.
 
 View selected apps shows the queue. Both modes let you remove an app.
@@ -3093,6 +3116,7 @@ help_menu() {
 }
 
 case "${1:-}" in
+    -v|--version) printf 'App Settings Utility %s\n' "$SCRIPT_VERSION"; exit 0 ;;
     -h|--help) print_usage; exit 0 ;;
     --manual)
         print_usage
