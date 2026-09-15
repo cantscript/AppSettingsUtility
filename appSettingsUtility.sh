@@ -2,7 +2,7 @@
 
 ###############################################################################
 # App Settings Utility
-# Version: 1.0.1
+# Version: 1.0.2
 #
 # Interactive app identifier and signing information lookup utility.
 #
@@ -13,7 +13,7 @@
 # Use of this utility and its output is entirely at your own risk.
 ###############################################################################
 
-SCRIPT_VERSION="1.0.1"
+SCRIPT_VERSION="1.0.2"
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -1493,7 +1493,7 @@ signature_field() {
 }
 
 inspect_local_app() {
-    local app="$1" name executable raw arch arches slice hash team signing state verified version bundle designated_requirement rows='[]'
+    local app="$1" name executable raw arch arches slice hash team signing state verified version bundle designated_requirement composed_identifier rows='[]'
     name="${app##*/}"; name="${name%.app}"
     # -r- asks codesign to display the app's internal designated requirement
     # alongside the signature fields already collected by this command.
@@ -1510,6 +1510,10 @@ inspect_local_app() {
     fi
     version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" 2>/dev/null)
     bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null)
+    composed_identifier=""
+    if [[ -n "$bundle" && -n "$designated_requirement" ]]; then
+        composed_identifier="$bundle {$designated_requirement}"
+    fi
     verified="Unverified"
     if /usr/bin/codesign --verify --strict --all-architectures "$app" >/dev/null 2>&1; then
         verified="Valid"
@@ -1546,18 +1550,21 @@ inspect_local_app() {
             --arg bundle "$bundle" --arg version "$version" --arg arch "$arch" \
             --arg hash "$hash" --arg team "$team" --arg signing "$signing" \
             --arg designated_requirement "$designated_requirement" \
+            --arg composed_identifier "$composed_identifier" \
             --arg state "$state" --arg verified "$verified" \
             '. + [{name:$name,path:$path,executable:$executable,bundleId:$bundle,version:$version,
                 architecture:$arch,CDHash:$hash,TeamID:$team,SigningID:$signing,
-                DesignatedRequirement:$designated_requirement,PathPrefix:($path + "/"),
+                DesignatedRequirement:$designated_requirement,ComposedIdentifier:$composed_identifier,
+                PathPrefix:($path + "/"),
                 SigningState:$state,verification:$verified}]')
     done
     LOCAL_INSPECTION="$rows"
 }
 
 show_local_details() {
-    local visible_inspection
+    local visible_inspection detail_view=0
     if [[ "$1" == all ]]; then
+        detail_view=1
         visible_inspection="$LOCAL_INSPECTION"
     else
         visible_inspection=$(printf '%s' "$LOCAL_INSPECTION" | jq -c '
@@ -1567,23 +1574,44 @@ show_local_details() {
     printf '%s' "$visible_inspection" | jq -r '.[0].name' | while IFS= read -r name; do
         printf '%b%b%s%b\n' "$CYAN" "$BOLD" "$name" "$RESET"
     done
-    printf '%s' "$visible_inspection" | jq -r '
-        def value: if . == "" then "Unavailable" else . end;
-        .[0] | "App path: \(.path)\nExecutable: \(.executable | value)
+    if (( detail_view )); then
+        printf '%s' "$visible_inspection" | jq -r '
+            def value: if . == "" then "Unavailable" else . end;
+            .[0] | "App path: \(.path)\nExecutable: \(.executable | value)
 Bundle ID: \(.bundleId | value)\nVersion: \(.version | value)
 Signature verification: \(.verification)\nPathPrefix (suggested): \(.PathPrefix)
+Composed Identifier: \(.ComposedIdentifier | value)
 Designated Requirement: \(.DesignatedRequirement | value)"
-    ' | format_app_attributes
+        ' | format_app_attributes
+    else
+        printf '%s' "$visible_inspection" | jq -r '
+            def value: if . == "" then "Unavailable" else . end;
+            .[0] | "App path: \(.path)\nBundle ID: \(.bundleId | value)
+Version: \(.version | value)\nSignature verification: \(.verification)
+PathPrefix (suggested): \(.PathPrefix)
+Composed Identifier: \(.ComposedIdentifier | value)"
+        ' | format_app_attributes
+    fi
+    if printf '%s' "$visible_inspection" | jq -e '.[0].ComposedIdentifier != ""' >/dev/null; then
+        echo "The Composed Identifier can be copied directly into the declaration."
+    fi
     printf '\n'
-    printf '%s' "$visible_inspection" | jq -r '
-        def value: if . == "" then "Unavailable" else . end;
-        .[] | "Architecture: \(.architecture)\nCDHash: \(.CDHash | value)
+    if (( detail_view )); then
+        printf '%s' "$visible_inspection" | jq -r '
+            def value: if . == "" then "Unavailable" else . end;
+            .[] | "Architecture: \(.architecture)\nCDHash: \(.CDHash | value)
 TeamID: \(.TeamID | value)\nSigningID: \(.SigningID | value)\nSigningState: \(.SigningState)\n"
-    ' | format_app_attributes
-    if [[ "$visible_inspection" != "$(printf '%s' "$LOCAL_INSPECTION" | jq -c .)" ]]; then
-        echo "Intel details are available in Show ARM and Intel details and CSV exports."
-    elif ! printf '%s' "$visible_inspection" | jq -e 'any(.[]; .architecture | startswith("arm"))' >/dev/null; then
-        echo "No Apple Silicon slice found; showing the available architecture details."
+        ' | format_app_attributes
+    else
+        printf '%s' "$visible_inspection" | jq -r '
+            def value: if . == "" then "Unavailable" else . end;
+            .[] | "CDHash: \(.CDHash | value)\nTeamID: \(.TeamID | value)
+SigningID: \(.SigningID | value)\nSigningState: \(.SigningState)\n"
+        ' | format_app_attributes
+        echo "Executable, designated requirement, and all architecture details are available in Show more details."
+    fi
+    if (( ! detail_view )) && ! printf '%s' "$visible_inspection" | jq -e 'any(.[]; .architecture | startswith("arm"))' >/dev/null; then
+        echo "No Apple Silicon slice found; showing the available signing details."
     fi
     echo "PathPrefix is a suggested app-folder restriction, not a signature field."
     echo "Details describe the main executable; embedded helpers are not inspected."
@@ -1603,7 +1631,7 @@ local_app_menu() {
         printf '\n%bWhat would you like to do with this app?%b\n\n' "$BOLD" "$RESET"
         MENU_ROW=0
         print_menu_option "  [1] Add to CSV"
-        if (( ! detail_view )); then print_menu_option "  [2] Show ARM and Intel details"; fi
+        if (( ! detail_view )); then print_menu_option "  [2] Show more details"; fi
         print_menu_option "  [s] Search again"
         if (( detail_view )); then print_menu_option "  [b] Back to selected app"; else print_menu_option "  [b] Back to results"; fi
         print_menu_option "  [h] Help"
@@ -1673,8 +1701,8 @@ export_local_csv() {
     fi
     output_file=$(mktemp "${OUTPUT_DIRECTORY}/Local-Mac-Apps_$(date +%Y-%m-%d_%H-%M-%S)_XXXXXX") || return
     if jq -sr '
-        ["App Name","App Path","Executable Path","Bundle ID","Version","Architecture","CDHash","TeamID","SigningID","Designated Requirement","PathPrefix (suggested)","SigningState","Signature Verification"],
-        (.[] | [.name,.path,.executable,.bundleId,.version,.architecture,.CDHash,.TeamID,.SigningID,.DesignatedRequirement,.PathPrefix,.SigningState,.verification]) | @csv
+        ["App Name","App Path","Executable Path","Bundle ID","Version","Composed Identifier","Architecture","CDHash","TeamID","SigningID","Designated Requirement","PathPrefix (suggested)","SigningState","Signature Verification"],
+        (.[] | [.name,.path,.executable,.bundleId,.version,.ComposedIdentifier,.architecture,.CDHash,.TeamID,.SigningID,.DesignatedRequirement,.PathPrefix,.SigningState,.verification]) | @csv
         ' "$LOCAL_SELECTED_FILE" > "$output_file" && mv "$output_file" "$output_file.csv"; then
         : > "$LOCAL_SELECTED_FILE"
         clear_screen
@@ -2961,8 +2989,8 @@ and apps elsewhere (such as ~/Applications) are not listed separately.
 The selected app's main executable is inspected without launching it.
 
 The normal view prefers Apple Silicon (arm64/arm64e). If there is no ARM
-slice, the available architecture is shown. Show ARM and Intel details
-shows the concise fields for all discovered architectures, not a raw dump.
+slice, the available signing details are shown. Show more details adds the
+executable path, raw designated requirement, and every architecture found.
 
 CSV keeps one row per architecture, including Intel x86_64 where present.
 A universal app can have different CDHashes for its ARM and Intel slices.
@@ -2983,8 +3011,11 @@ is not proof of Apple signing. Existing team identifiers are preserved.
 SigningID: the Identifier in the code signature; it is not assumed to be
 the same as the app bundle's identifier.
 Designated Requirement: Apple's expression for recognising this signed
-app, reported by codesign. It is shown once because it identifies the app,
-rather than an individual ARM or Intel slice.
+app, reported by codesign. The detailed view shows it once because it
+identifies the app rather than an individual ARM or Intel slice.
+Composed Identifier: the bundle ID, one space, and designated requirement
+inside curly brackets. For macOS app privacy settings, this complete value
+can be copied into the declaration as its app identifier.
 PathPrefix (suggested): the app folder with a trailing slash. This is an
 optional path restriction you could choose, not data from the signature.
 
@@ -3015,9 +3046,10 @@ App Store CSV includes name, platforms, bundle ID, App Store ID, developer,
 version, minimum OS, App Store URL, and External Version ID.
 
 Local CSV includes name, app and executable paths, bundle ID, version,
-architecture, CDHash, TeamID, SigningID, designated requirement, suggested
-PathPrefix, SigningState, and signature verification. A universal app can
-produce multiple rows; its designated requirement is repeated in each row.
+composed identifier, architecture, CDHash, TeamID, SigningID, designated
+requirement, suggested PathPrefix, SigningState, and signature verification.
+A universal app can produce multiple rows; its app-level identifiers are
+repeated in each row.
 Unknown SigningState is retained as Unknown; unavailable IDs are blank.
 
 View selected apps shows the queue. Both modes let you remove an app.
